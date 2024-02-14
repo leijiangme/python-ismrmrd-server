@@ -89,33 +89,28 @@ def process_raw(group, connection, config, metadata):
     logging.info("Config: %s\n", config)
 
     full_x_matrix = metadata.encoding.encodedSpace.matrixSize.x  # including oversampling x 2
-    full_x_sample = group
-    {1}.head.number_of_samples;
-    x_center_sample = group
-    {1}.head.center_sample;
+    full_x_sample = group[0].head.number_of_samples
+    x_center_sample = group[0].head.center_sample
 
     # Use the first acquisition to determine the number of readout points and coils
     if floor(full_x_sample / 2.0) == x_center_sample:
-        readout_num = size(group
-        {1}.data, 1)
-        else:
+        readout_num = size(group[0].data, 1)
+    else:
         readout_num = full_x_matrix
 
-    coil_num = size(group
-    {1}.data, 2);
+    coil_num = size(group[0].data, 2);
     # Total number of phase encoding lines (obtained from metadata or prior knowledge)
-    PE_num = metadata.encoding.encodingLimits.kspace_encoding_step_1.maximum + 1;
+    PE_num = metadata.encoding.encodingLimits.kspace_encoding_step_1.maximum + 1
     # Prepare k_space_matrix with all potential phase encoding lines
-    k_space_matrix = zeros(readout_num, coil_num, PE_num, 'like', group
-    {1}.data);
+    k_space_matrix = zeros(readout_num, coil_num, PE_num, 'like', group[0].data)
     # logging.info("readout_num: #d", readout_num);
     # logging.info("PE_num: %d", PE_num);
 
     # Determine the indexing range based on x_center_sample condition
     if floor(full_x_sample / 2.0) == x_center_sample:
-        row_range = 1:readout_num;
+        row_range = 1:readout_num
     else:
-        row_range = (full_x_matrix / 2.0 - x_center_sample + 1):full_x_matrix;
+        row_range = (full_x_matrix / 2.0 - x_center_sample + 1):full_x_matrix
 
     # Reconstruct images
     images = []
