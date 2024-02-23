@@ -181,11 +181,8 @@ def process_raw(group, connection, config, metadata):
     data *= np.prod(data.shape) # FFT scaling for consistency with ICE
 
     # Sum of squares coil combination
-    # Data will be [PE RO phs]
-    data = np.abs(data)
-    data = np.square(data)
-    data = np.sum(data, axis=0)
-    data = np.sqrt(data)
+
+    
 
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)

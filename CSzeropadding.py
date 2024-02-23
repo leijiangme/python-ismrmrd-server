@@ -13,8 +13,10 @@ import mrdhelper
 import constants
 from time import perf_counter
 
-
 # Folder for debug output files
+debugFolder = "/tmp/share/debug"
+
+
 def process(connection, config, metadata):
     logging.info("Config: \n%s", config)
 
@@ -86,88 +88,111 @@ def process(connection, config, metadata):
 
 
 def process_raw(group, connection, config, metadata):
-    logging.info("Config: %s\n", config)
+    if len(group) == 0:
+        return []
 
-    full_x_matrix = metadata.encoding.encodedSpace.matrixSize.x  # including oversampling x 2
-    full_x_sample = group[0].head.number_of_samples
-    x_center_sample = group[0].head.center_sample
+    # Start timer
+    tic = perf_counter()
 
-    # Use the first acquisition to determine the number of readout points and coils
-    if floor(full_x_sample / 2.0) == x_center_sample:
-        readout_num = size(group[0].data, 1)
-    else:
-        readout_num = full_x_matrix
+    # Create folder, if necessary
+    if not os.path.exists(debugFolder):
+        os.makedirs(debugFolder)
+        logging.debug("Created folder " + debugFolder + " for debug output files")
 
-    coil_num = size(group[0].data, 2);
-    # Total number of phase encoding lines (obtained from metadata or prior knowledge)
-    PE_num = metadata.encoding.encodingLimits.kspace_encoding_step_1.maximum + 1
-    # Prepare k_space_matrix with all potential phase encoding lines
-    k_space_matrix = zeros(readout_num, coil_num, PE_num, 'like', group[0].data)
-    # logging.info("readout_num: #d", readout_num);
-    # logging.info("PE_num: %d", PE_num);
+    # Format data into single [cha PE RO phs] array
 
-    # Determine the indexing range based on x_center_sample condition
-    if floor(full_x_sample / 2.0) == x_center_sample:
-        row_range = 1:readout_num
-    else:
-        row_range = (full_x_matrix / 2.0 - x_center_sample + 1):full_x_matrix
+    # corresponding PE line in undersampling acquisition
+    lin = [acquisition.idx.kspace_encode_step_1 for acquisition in group]
+    phs = [acquisition.idx.phase for acquisition in group]
 
-    # Reconstruct images
-    images = []
+    # Use the zero-padded matrix size
+    data = np.zeros((group[0].data.shape[0],
+                     metadata.encoding[0].encodedSpace.matrixSize.y,
+                     metadata.encoding[0].encodedSpace.matrixSize.x,
+                     max(phs) + 1),
+                    group[0].data.dtype)
 
-    # Loop through each acquisition and add it to the correct k-space matrix
-    for i = 1:numel(group)
-    acq = group
-    {i};
-    k_space_matrix(row_range,:, acq.head.idx.kspace_encode_step_1 + 1) = acq.data;
+    rawHead = [None] * (max(phs) + 1)
 
+    for acq, lin, phs in zip(group, lin, phs):
+        if (lin < data.shape[1]) and (phs < data.shape[3]):
+            # data and acq.data are different
+            # acq.data is [cha RO]
+            data[:, lin, -acq.data.shape[1]:, phs] = acq.data
 
-# Format data into a single [RO PE cha] array
-# ksp = cell2mat(permute(cellfun(@(x) x.data, group, 'UniformOutput', false), [1 3 2]));
+            # center line of k-space is encoded in user[5]
+            # For example:
+            # hdr = ismrmrd.xml.deserialize(dset.readxml)
+            # dset = ismrmrd.Dataset('test.h5','dataset')
+            # ksp = dset.readAcquisition()
+            # ksp[n].head.idx.user : [0,0,0,0,0,116,0,0] center of PE
+            # ksp[n].head.center_sample : 120 center of RO
+            if (rawHead[phs] is None) or (
+                    np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(
+                rawHead[phs].idx.kspace_encode_step_1 - rawHead[phs].idx.user[5])):
+                rawHead[phs] = acq.getHead()
 
-ksp = permute(k_space_matrix, [1 3 2]);
+    # Flip matrix in RO/PE to be consistent with ICE
+    data = np.flip(data, (1, 2))
 
-# Fourier Transform
-for n=1:size(ksp, 3)
-img(:,:, n) = fftshift(ifft2(ifftshift(ksp(:,:, n))));
+    logging.debug("Raw data is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "raw.npy", data)
 
+    # Fourier Transform
+    data = fft.fftshift(data, axes=(1, 2))
+    data = fft.ifft2(data, axes=(1, 2))
+    data = fft.ifftshift(data, axes=(1, 2))
+    data *= np.prod(data.shape)  # FFT scaling for consistency with ICE
 
-# Sum of squares coil combination
-img = sqrt(sum(abs(img). ^ 2, 3));
+    # Sum of squares coil combination
 
-# Remove phase oversampling
-im = img(round(size(img, 1) / 4 + 1):round(size(img, 1) * 3 / 4),:);
+    logging.debug("Image data is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "img.npy", data)
 
-im = im. * (32767. / max(im(:)));
-im = int16(round(im));
+    # Remove readout oversampling
+    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x) / 2)
+    data = data[:, offset:offset + metadata.encoding[0].reconSpace.matrixSize.x]
 
-# Create MRD Image object, set image data and (matrix_size, channels, and data_type) in header
-image = ismrmrd.Image(im);
+    # Remove phase oversampling
+    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y) / 2)
+    data = data[offset:offset + metadata.encoding[0].reconSpace.matrixSize.y, :]
 
-# Copy the relevant AcquisitionHeader fields to ImageHeader
-# image.head = image.head.fromAcqHead(group{centerIdx}.head);
-image.head = image.head.fromAcqHead(group
-{1}.head);
+    logging.debug("Image without oversampling is size %s" % (data.shape,))
+    np.save(debugFolder + "/" + "imgCrop.npy", data)
 
-# field_of_view is mandatory
-image.head.field_of_view = single([metadata.encoding(1).reconSpace.fieldOfView_mm.x...
-                                  metadata.encoding(1).reconSpace.fieldOfView_mm.y...
-                                  metadata.encoding(1).reconSpace.fieldOfView_mm.z]);
+    # Measure processing time
+    toc = perf_counter()
+    strProcessTime = "Total processing time: %.2f ms" % ((toc - tic) * 1000.0)
+    logging.info(strProcessTime)
 
-# Set ISMRMRD Meta Attributes
-meta = struct;
-meta.DataRole = 'Image';
-meta.ProcessingHistory = 'MATLAB';
-meta.WindowCenter = uint16(16384);
-meta.WindowWidth = uint16(32768);
-meta.ImageRowDir = group
-{1}.head.read_dir;
-meta.ImageColumnDir = group
-{1}.head.phase_dir;
+    # Send this as a text message back to the client
+    connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
 
-# set_attribute_string also updates attribute_string_len
-image = image.set_attribute_string(ismrmrd.Meta.serialize(meta));
+    # Format as ISMRMRD image data
+    imagesOut = []
+    for phs in range(data.shape[2]):
+        # Create new MRD instance for the processed image
+        # data has shape [PE RO phs], i.e. [y x].
+        # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+        # with this option, can take input as: [cha z y x], [z y x], or [y x]
+        tmpImg = ismrmrd.Image.from_array(data[..., phs], transpose=False)
 
-# Append
-images
-{end + 1} = image;
+        # Set the header information
+        tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[phs]))
+        tmpImg.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x),
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y),
+                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+        tmpImg.image_index = phs
+
+        # Set ISMRMRD Meta Attributes
+        tmpMeta = ismrmrd.Meta()
+        tmpMeta['DataRole'] = 'Image'
+        tmpMeta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
+        tmpMeta['Keep_image_geometry'] = 1
+
+        xml = tmpMeta.serialize()
+        logging.debug("Image MetaAttributes: %s", xml)
+        tmpImg.attribute_string = xml
+        imagesOut.append(tmpImg)
+
+    return imagesOut
