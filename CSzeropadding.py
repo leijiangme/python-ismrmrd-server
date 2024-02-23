@@ -132,67 +132,72 @@ def process_raw(group, connection, config, metadata):
                 rawHead[phs].idx.kspace_encode_step_1 - rawHead[phs].idx.user[5])):
                 rawHead[phs] = acq.getHead()
 
-    # Flip matrix in RO/PE to be consistent with ICE
-    data = np.flip(data, (1, 2))
+        # Flip matrix in RO/PE to be consistent with ICE
+        data = np.flip(data, (1, 2))
 
-    logging.debug("Raw data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "raw.npy", data)
+        logging.debug("Raw data is size %s" % (data.shape,))
+        np.save(debugFolder + "/" + "raw.npy", data)
 
-    # Fourier Transform
-    data = fft.fftshift(data, axes=(1, 2))
-    data = fft.ifft2(data, axes=(1, 2))
-    data = fft.ifftshift(data, axes=(1, 2))
-    data *= np.prod(data.shape)  # FFT scaling for consistency with ICE
+        # Fourier Transform
+        data = fft.fftshift(data, axes=(1, 2))
+        data = fft.ifft2(data, axes=(1, 2))
+        data = fft.ifftshift(data, axes=(1, 2))
+        data *= np.prod(data.shape)  # FFT scaling for consistency with ICE
 
-    # Sum of squares coil combination
+        # Sum of squares coil combination
+        # Data will be [PE RO phs]
+        data = np.abs(data)
+        data = np.square(data)
+        data = np.sum(data, axis=0)
+        data = np.sqrt(data)
 
-    logging.debug("Image data is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "img.npy", data)
+        logging.debug("Image data is size %s" % (data.shape,))
+        np.save(debugFolder + "/" + "img.npy", data)
 
-    # Remove readout oversampling
-    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x) / 2)
-    data = data[:, offset:offset + metadata.encoding[0].reconSpace.matrixSize.x]
+        # Remove readout oversampling
+        offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x) / 2)
+        data = data[:, offset:offset + metadata.encoding[0].reconSpace.matrixSize.x]
 
-    # Remove phase oversampling
-    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y) / 2)
-    data = data[offset:offset + metadata.encoding[0].reconSpace.matrixSize.y, :]
+        # Remove phase oversampling
+        offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y) / 2)
+        data = data[offset:offset + metadata.encoding[0].reconSpace.matrixSize.y, :]
 
-    logging.debug("Image without oversampling is size %s" % (data.shape,))
-    np.save(debugFolder + "/" + "imgCrop.npy", data)
+        logging.debug("Image without oversampling is size %s" % (data.shape,))
+        np.save(debugFolder + "/" + "imgCrop.npy", data)
 
-    # Measure processing time
-    toc = perf_counter()
-    strProcessTime = "Total processing time: %.2f ms" % ((toc - tic) * 1000.0)
-    logging.info(strProcessTime)
+        # Measure processing time
+        toc = perf_counter()
+        strProcessTime = "Total processing time: %.2f ms" % ((toc - tic) * 1000.0)
+        logging.info(strProcessTime)
 
-    # Send this as a text message back to the client
-    connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
+        # Send this as a text message back to the client
+        connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
 
-    # Format as ISMRMRD image data
-    imagesOut = []
-    for phs in range(data.shape[2]):
-        # Create new MRD instance for the processed image
-        # data has shape [PE RO phs], i.e. [y x].
-        # from_array() should be called with 'transpose=False' to avoid warnings, and when called
-        # with this option, can take input as: [cha z y x], [z y x], or [y x]
-        tmpImg = ismrmrd.Image.from_array(data[..., phs], transpose=False)
+        # Format as ISMRMRD image data
+        imagesOut = []
+        for phs in range(data.shape[2]):
+            # Create new MRD instance for the processed image
+            # data has shape [PE RO phs], i.e. [y x].
+            # from_array() should be called with 'transpose=False' to avoid warnings, and when called
+            # with this option, can take input as: [cha z y x], [z y x], or [y x]
+            tmpImg = ismrmrd.Image.from_array(data[..., phs], transpose=False)
 
-        # Set the header information
-        tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[phs]))
-        tmpImg.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x),
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y),
-                                ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
-        tmpImg.image_index = phs
+            # Set the header information
+            tmpImg.setHead(mrdhelper.update_img_header_from_raw(tmpImg.getHead(), rawHead[phs]))
+            tmpImg.field_of_view = (ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.x),
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.y),
+                                    ctypes.c_float(metadata.encoding[0].reconSpace.fieldOfView_mm.z))
+            tmpImg.image_index = phs
 
-        # Set ISMRMRD Meta Attributes
-        tmpMeta = ismrmrd.Meta()
-        tmpMeta['DataRole'] = 'Image'
-        tmpMeta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
-        tmpMeta['Keep_image_geometry'] = 1
+            # Set ISMRMRD Meta Attributes
+            tmpMeta = ismrmrd.Meta()
+            tmpMeta['DataRole'] = 'Image'
+            tmpMeta['ImageProcessingHistory'] = ['FIRE', 'PYTHON']
+            tmpMeta['Keep_image_geometry'] = 1
 
-        xml = tmpMeta.serialize()
-        logging.debug("Image MetaAttributes: %s", xml)
-        tmpImg.attribute_string = xml
-        imagesOut.append(tmpImg)
+            xml = tmpMeta.serialize()
+            logging.debug("Image MetaAttributes: %s", xml)
+            tmpImg.attribute_string = xml
+            imagesOut.append(tmpImg)
 
-    return imagesOut
+        return imagesOut
