@@ -82,6 +82,7 @@ class Server:
             if connection.peek_mrd_message_identifier() == constants.MRD_MESSAGE_TEXT:
                 configAdditionalText = next(connection)
                 logging.info("Received additional config text: %s", configAdditionalText)
+                connection.save_additional_config(configAdditionalText)
                 try:
                     configAdditional = json.loads(configAdditionalText)
 
@@ -131,14 +132,15 @@ class Server:
                     module = importlib.import_module(config)
                     logging.info("Starting config %s", config)
                     module.process(connection, configAdditional, metadata)
-                except ImportError:
-                    logging.info("Unknown config '%s'.  Falling back to default config: '%s'", config, self.defaultConfig)
+                except ImportError as e:
+                    logging.info("Failed to load config '%s' with error:\n  %s", config, e)
+                    logging.info("Falling back to default config: '%s'", self.defaultConfig)
                     try:
                         module = importlib.import_module(self.defaultConfig)
                         logging.info("Starting config %s", self.defaultConfig)
                         module.process(connection, configAdditional, metadata)
-                    except ImportError:
-                        logging.info("Failed to load default config '%s'", self.defaultConfig)
+                    except ImportError as e:
+                        logging.info("Failed to load default config '%s' with error:\n  %s", self.defaultConfig, e)
 
         except Exception as e:
             logging.exception(e)
