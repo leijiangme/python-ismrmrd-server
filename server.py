@@ -13,6 +13,7 @@ import json
 import simplefft
 import invertcontrast
 import analyzeflow
+import CSzeropadding
 
 class Server:
     """
@@ -110,6 +111,9 @@ class Server:
             elif (config == "analyzeflow"):
                 logging.info("Starting analyzeflow processing based on config")
                 analyzeflow.process(connection, configAdditional, metadata)
+            elif (config == "CSzeropadding"):
+                logging.info("Starting CSzeropadding processing based on config")
+                CSzeropadding.process(connection, configAdditional, metadata)
             elif (config == "null"):
                 logging.info("No processing based on config")
                 try:
