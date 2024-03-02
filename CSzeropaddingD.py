@@ -59,9 +59,9 @@ def process(connection, config, metadata):
                         acqGroup = []  # reset                
 
             elif item is None:  # Receive MRD_MESSAGE_CLOSE
-                break
+                break # break to end the loop completely.
             else: # We might need this else satement when partial repetitions used
-                continue
+                continue # to end the current iteration in a loop, and continues to the next iteration.
 
         # Process remaining items if any
         if len(acqGroup_Cali) > 0:
@@ -86,6 +86,9 @@ def process_raw(group, connection, config, metadata):
     if len(group) == 0:
         return []
 
+    # Start timer
+    tic = perf_counter()
+
     # Create folder, if necessary
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
@@ -107,9 +110,18 @@ def process_raw(group, connection, config, metadata):
 
     for acq, lin, phs in zip(group, lin, phs):
         if (lin < data.shape[1]) and (phs < data.shape[3]):
+            # data: [cha PE RO phs]
+            # acq.data: [cha RO]
             data[:, lin, -acq.data.shape[1]:, phs] = acq.data
 
             # center line of k-space is encoded in user[5]
+            #
+            # hdr = ismrmrd.xml.deserialize(dset.readxml)
+            # dset = ismrmrd.Dataset('test.h5','dataset')
+            # ksp = dset.readAcquisition()
+            #
+            # ksp[n].head.idx.user : [0,0,0,0,0,116,0,0] center of PE
+            # ksp[n].head.center_sample : 120 center of RO
             if (rawHead[phs] is None) or (
                     np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(
                 rawHead[phs].idx.kspace_encode_step_1 - rawHead[phs].idx.user[5])):
@@ -136,6 +148,10 @@ def process_raw(group, connection, config, metadata):
 
     logging.debug("Image data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "img.npy", data)
+
+    # (0028,0100)	Bits Allocated	US	16
+    # (0028,0101)	Bits Stored	    US	12 
+    # dynamic range 12 bits (0-4095)
     
     # Determine max value (12 or 16 bit)
     BitsStored = 12
@@ -158,6 +174,14 @@ def process_raw(group, connection, config, metadata):
 
     logging.debug("Image without oversampling is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "imgCrop.npy", data)
+
+    # Measure processing time
+    toc = perf_counter()
+    strProcessTime = "Total processing time: %.2f ms" % ((toc - tic) * 1000.0)
+    logging.info(strProcessTime)
+
+    # Send this as a text message back to the client
+    connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
 
     # Format as ISMRMRD image data
     imagesOut = []
