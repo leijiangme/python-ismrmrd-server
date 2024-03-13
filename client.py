@@ -21,7 +21,7 @@ defaults = {
     'port':           9002, 
     'outfile':        'out.h5',
     'out_group':      str(datetime.datetime.now()),
-    'config':         'default.xml',
+    'config':         'invertcontrast',
     'config_local':   '',
     'send_waveforms': False,
     'verbose':        False,
@@ -73,6 +73,16 @@ def main(args):
             logging.error("Could not find local config file %s", args.config_local)
             return
 
+    localConfigAdditionalText = None
+    if (args.config):
+        configAdditionalFile = args.config + '.json'
+        if os.path.exists(configAdditionalFile):
+            logging.info("Found additional config file %s", configAdditionalFile)
+
+            fid = open(configAdditionalFile, 'r')
+            localConfigAdditionalText = fid.read()
+            fid.close()
+
     dset = h5py.File(args.filename, 'r')
     if not dset:
         logging.error("Not a valid dataset: %s" % args.filename)
@@ -111,32 +121,22 @@ def main(args):
     #   /group/image_0/data        array of IsmrmrdImage data
     #   /group/image_0/header      array of ImageHeader
     #   /group/image_0/attributes  text of image MetaAttributes
-    isRaw   = False
-    isImage = False
+    hasRaw   = False
+    hasImage = False
     hasWaveforms = False
 
-    if ( ('data' in group) and ('xml' in group) ):
-        isRaw = True
-    else:
-        isImage = True
-        imageNames = group.keys()
-        logging.info("Found %d image sub-groups: %s", len(imageNames), ", ".join(imageNames))
-        # print(" ", "\n  ".join(imageNames))
-
-        for imageName in imageNames:
-            if ((imageName == 'xml') or (imageName == 'config') or (imageName == 'config_file')):
-                continue
-
-            image = group[imageName]
-            if not (('data' in image) and ('header' in image) and ('attributes' in image)):
-                isImage = False
+    if ('data' in group):
+        hasRaw = True
+    
+    if len([key for key in group.keys() if (key.startswith('image_') or key.startswith('images_'))]) > 0:
+        hasImage = True
 
     if ('waveforms' in group):
         hasWaveforms = True
 
     dset.close()
 
-    if ((isRaw is False) and (isImage is False)):
+    if ((hasRaw is False) and (hasImage is False)):
         logging.error("File does not contain properly formatted MRD raw or image data")
         return
 
@@ -201,11 +201,20 @@ def main(args):
 
     # --------------- Send additional config -----------------------
     groups = dset.list()
-    if ('configAdditional' in groups):
-        configAdditionalText = dset._dataset['configAdditional'][0]
-        configAdditionalText = configAdditionalText.decode("utf-8")
-        logging.info("Sending configAdditional found in file: %s", configAdditionalText)
-        connection.send_text(configAdditionalText)
+    if localConfigAdditionalText is None:
+        if ('configAdditional' in groups):
+            configAdditionalText = dset._dataset['configAdditional'][0]
+            configAdditionalText = configAdditionalText.decode("utf-8")
+            logging.info("Sending configAdditional found in file %s:\n%s", args.filename, configAdditionalText)
+            connection.send_text(configAdditionalText)
+        else:
+            # Do nothing -- no additional config in local .json file or in MRD file
+            pass
+    else:
+        if ('configAdditional' in groups):
+            logging.warning("configAdditional found in file %s, but is overriden by local file %s!", args.filename, configAdditionalFile)
+        logging.info("Sending configAdditional found in file %s:\n%s", configAdditionalFile, localConfigAdditionalText)
+        connection.send_text(localConfigAdditionalText)
 
     # --------------- Send waveform data ----------------------
     # TODO: Interleave waveform and other data so they arrive chronologically
@@ -225,7 +234,7 @@ def main(args):
             logging.info("Waveform data present, but send-waveforms option turned off")
 
     # --------------- Send raw data ----------------------
-    if isRaw:
+    if hasRaw:
         logging.info("Starting raw data session")
         logging.info("Found %d raw data readouts", dset.number_of_acquisitions())
 
@@ -238,13 +247,9 @@ def main(args):
                 break
 
     # --------------- Send image data ----------------------
-    else:
+    if hasImage:
         logging.info("Starting image data session")
-        for group in groups:
-            if ( (group == 'config') or (group == 'config_file') or (group == 'xml') ):
-                logging.info("Skipping group %s", group)
-                continue
-
+        for group in [key for key in groups if (key.startswith('image_') or key.startswith('images_'))]:
             logging.info("Reading images from '/" + args.in_group + "/" + group + "'")
 
             for imgNum in range(0, dset.number_of_images(group)):
